@@ -96,6 +96,7 @@ class DataManager(Dataset):
         else:
             self.transform = transforms.Compose(
                 [
+                    transforms.CenterCrop((256,256)),
                     transforms.ToTensor(),
                     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                          std=[0.229, 0.224, 0.225])
@@ -221,23 +222,28 @@ class StyleTransferNet(nn.Module):
 
             output : the result of AdaIN operation
         """
-        style_mean, style_std = self.calc_mean_std(y)
-        content_mean, content_std = self.calc_mean_std(x)
+        style_mu, style_sigma = self.calc_mean_std(y)
+        content_mu, content_sigma = self.calc_mean_std(x)
 
-        normalized_feat = (x - content_mean.expand(size)) / content_std.expand([Bx, Cx, Hx, Wx])
-        output = normalized_feat * style_std.expand(size) + style_mean.expand([Bx, Cx, Hx, Wx])
+        normalized_feat = (x - content_mu.expand([Bx, Cx, Hx, Wx])) / content_sigma.expand([Bx, Cx, Hx, Wx])
+        output = normalized_feat * style_sigma.expand([Bx, Cx, Hx, Wx]) + style_mu.expand([Bx, Cx, Hx, Wx])
 
         return output
 
-    def encode_with_intermediate(self, input):
-        results = [input]
-        for i in range(4):
-            func = getattr(self, 'enc_{:d}'.format(i + 1))
-            results.append(func(results[-1]))
+    def encode_with_intermediate(self, x):
+        results = [x]
+        h = self.enc_1(x)
+        results.append(h)
+        h = self.enc_2(h)
+        results.append(h)
+        h = self.enc_3(h)
+        results.append(h)
+        h = self.enc_4(h)
+        results.append(h)
         return results[1:]
 
-    def encode(self, input):
-        h = self.enc_1(h)
+    def encode(self, x):
+        h = self.enc_1(x)
         h = self.enc_2(h)
         h = self.enc_3(h)
         h = self.enc_4(h)
@@ -253,18 +259,17 @@ class StyleTransferNet(nn.Module):
         feat_mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
         return feat_mean, feat_std
 
-    def calc_content_loss(self, input, target):
+    def calc_loss(self, input, target, loss_type):
         assert (input.size() == target.size())
         assert (target.requires_grad is False)
-        return self.mse_loss(input, target)
-
-    def calc_style_loss(self, input, target):
-        assert (input.size() == target.size())
-        assert (target.requires_grad is False)
-        input_mean, input_std = self.calc_mean_std(input)
-        target_mean, target_std = self.calc_mean_std(target)
-        return self.mse_loss(input_mean, target_mean) + \
-                self.mse_loss(input_std, target_std)
+        assert loss_type=='content' or loss_type=='style'
+        if loss_type=='content':
+            return self.mse_loss(input, target)
+        else:
+            input_mean, input_std = self.calc_mean_std(input)
+            target_mean, target_std = self.calc_mean_std(target)
+            return self.mse_loss(input_mean, target_mean) + \
+                     self.mse_loss(input_std, target_std)
 
     def forward(self, x, y):
         B, C, H, W = x.shape
@@ -281,7 +286,6 @@ class StyleTransferNet(nn.Module):
         t = self.AdaINLayer(content_feat, style_feats[-1])
         if not self.training:
             img_result = []
-            #for alpha in np.arange(0,1.1,0.25):
             alpha = 0.
             a = alpha * t + (1 - alpha) * content_feat
             img_result.append(self.decoder(a))
@@ -303,10 +307,10 @@ class StyleTransferNet(nn.Module):
         img_result = self.decoder(t)
         g_t_feats = self.encode_with_intermediate(img_result)
 
-        loss_c = self.calc_content_loss(g_t_feats[-1], t)
-        loss_s = self.calc_style_loss(g_t_feats[0], style_feats[0])
+        loss_c = self.calc_loss(g_t_feats[-1], t, 'content')
+        loss_s = self.calc_loss(g_t_feats[0], style_feats[0], 'style')
         for i in range(1, 4):
-            loss_s += self.calc_style_loss(g_t_feats[i], style_feats[i])
+            loss_s += self.calc_loss(g_t_feats[i], style_feats[i], 'style')
 
         loss = loss_c + self.w_style*loss_s
 
@@ -379,8 +383,6 @@ def train():
             img_sty = Variable(img_sty, requires_grad=False).cuda()
 
             optimizer.zero_grad()
-
-            #ipdb.set_trace()
 
             loss, img_result = net(img_con, img_sty)
 

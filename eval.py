@@ -72,8 +72,8 @@ def test():
     disp_step = 1
 
     # Data loader
-    dm = DataManager(path_content, path_style, random_crop=True)
-    dl = DataLoader(dm, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=False)
+    dm = DataManager(path_content, path_style, random_crop=False)
+    dl = DataLoader(dm, batch_size=batch_size, shuffle=False, num_workers=4, drop_last=False)
 
     num_train = dm.num
     num_batch = np.ceil(num_train / batch_size)
